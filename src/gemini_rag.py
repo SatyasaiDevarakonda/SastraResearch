@@ -1,6 +1,7 @@
 """
 SASTRA Research Finder - Gemini RAG Module
 Fine-tuned for accurate keyword extraction and research analysis.
+Updated to support Streamlit Cloud secrets.
 """
 
 import os
@@ -31,7 +32,7 @@ class GeminiRAG:
     
     def __init__(self):
         """Initialize Gemini/Gemma API client."""
-        self.api_key = os.getenv('GOOGLE_API_KEY', '')
+        self.api_key = self._get_api_key()
         self.client = None
         self.model = None
         self.model_name = None
@@ -40,7 +41,6 @@ class GeminiRAG:
         if GEMINI_AVAILABLE and self.api_key:
             try:
                 # Initialize Google GenAI client
-                # The Client will pick up GOOGLE_API_KEY or GEMINI_API_KEY if set
                 self.client = Client(api_key=self.api_key)
 
                 # Fetch models from API
@@ -64,12 +64,57 @@ class GeminiRAG:
                             self._initialized = True
                             print(f"✓ Gemini API initialized with model: {m}")
                             break
+                    
+                    if not self._initialized:
+                        print("✗ No preferred model found in available models")
                 else:
-                    print("Could not fetch models — no compatible model available.")
+                    print("✗ Could not fetch models — no compatible model available.")
 
             except Exception as e:
                 print(f"✗ Gemini initialization failed: {e}")
                 self._initialized = False
+        else:
+            if not GEMINI_AVAILABLE:
+                print("✗ Google GenAI library not installed")
+            if not self.api_key:
+                print("✗ No API key found")
+    
+    def _get_api_key(self) -> str:
+        """
+        Get API key from multiple sources in priority order:
+        1. Streamlit secrets (for cloud deployment)
+        2. Environment variable
+        3. .env file
+        """
+        # Priority 1: Streamlit secrets (for cloud deployment)
+        try:
+            import streamlit as st
+            if hasattr(st, 'secrets') and 'GOOGLE_API_KEY' in st.secrets:
+                print("✓ API key loaded from Streamlit secrets")
+                return st.secrets['GOOGLE_API_KEY']
+        except (ImportError, FileNotFoundError, KeyError, AttributeError) as e:
+            # Streamlit not available or secrets not configured
+            pass
+        
+        # Priority 2: Environment variable
+        api_key = os.getenv('GOOGLE_API_KEY', '')
+        if api_key:
+            print("✓ API key loaded from environment variable")
+            return api_key
+        
+        # Priority 3: Try loading .env file explicitly
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            api_key = os.getenv('GOOGLE_API_KEY', '')
+            if api_key:
+                print("✓ API key loaded from .env file")
+                return api_key
+        except ImportError:
+            pass
+        
+        print("✗ No API key found in any location")
+        return ''
     
     def _list_available_models(self) -> List[str]:
         """Query the Gemini API to get list of available models."""
@@ -94,11 +139,11 @@ class GeminiRAG:
                 return sorted(models, reverse=True)
 
             else:
-                print(f"Model list API returned {response.status_code}")
+                print(f"✗ Model list API returned {response.status_code}")
                 return []
                 
         except Exception as e:
-            print(f"Failed to fetch model list: {e}")
+            print(f"✗ Failed to fetch model list: {e}")
             return []
     
     def is_available(self) -> bool:
@@ -141,7 +186,6 @@ Skills:"""
 
         try:
             # Build SDK config object using types.GenerateContentConfig
-            # NOTE: we use the types object from google.genai
             cfg = None
             if types is not None:
                 cfg = types.GenerateContentConfig(
@@ -262,7 +306,7 @@ Skills:"""
         if not self.is_available():
             return {
                 'analysis': None,
-                'error': 'Gemini API not configured. Add GOOGLE_API_KEY to .env file.'
+                'error': 'Gemini API not configured. Add GOOGLE_API_KEY to Streamlit secrets or .env file.'
             }
         
         if not context:
