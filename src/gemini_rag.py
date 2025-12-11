@@ -1,6 +1,6 @@
 """
 SASTRA Research Finder - Gemini RAG Module
-Fine-tuned for accurate keyword extraction and research analysis.
+Compatible with google-generativeai (OLD SDK)
 Updated to support Streamlit Cloud secrets.
 """
 
@@ -17,65 +17,67 @@ try:
 except ImportError:
     pass
 
-# Try to import NEW Google GenAI client and types
+# Try to import OLD Google GenerativeAI
 try:
-    from google.genai import Client, types
+    import google.generativeai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
-    Client = None
-    types = None
+    genai = None
 
 
 class GeminiRAG:
-    """RAG system using Google GenAI (Gemma free-tier models)."""
+    """RAG system using Google GenerativeAI (Gemini models)."""
     
     def __init__(self):
-        """Initialize Gemini/Gemma API client."""
+        """Initialize Gemini API client."""
         self.api_key = self._get_api_key()
-        self.client = None
         self.model = None
         self.model_name = None
         self._initialized = False
         
         if GEMINI_AVAILABLE and self.api_key:
             try:
-                # Initialize Google GenAI client
-                self.client = Client(api_key=self.api_key)
-
-                # Fetch models from API
+                # Configure the OLD SDK
+                genai.configure(api_key=self.api_key)
+                
+                # Try to list available models
                 available_models = self._list_available_models()
-
+                
                 if available_models:
-                    print(f"Available models: {', '.join(available_models[:5])}")
-
-                    # PRIORITY LIST (free-tier safe)
+                    print(f"✓ Found {len(available_models)} available models")
+                    
+                    # PRIORITY LIST for OLD SDK (use Gemini models)
                     PREFERRED_MODELS = [
-                        "gemma-3-27b-it",
-                        "gemma-3-4b-it",
-                        "gemma-3n-e4b-it",
-                        "gemma-3n-e2b-it",
-                        "nano-banana-pro-preview"
+                        "gemini-1.5-flash",
+                        "gemini-1.5-flash-8b",
+                        "gemini-1.0-pro",
+                        "gemini-pro"
                     ]
-
-                    for m in PREFERRED_MODELS:
-                        if m in available_models:
-                            self.model_name = m
+                    
+                    for model_name in PREFERRED_MODELS:
+                        if model_name in available_models:
+                            self.model_name = model_name
+                            self.model = genai.GenerativeModel(model_name)
                             self._initialized = True
-                            print(f"✓ Gemini API initialized with model: {m}")
+                            print(f"✓ Gemini API initialized with model: {model_name}")
                             break
                     
                     if not self._initialized:
-                        print("✗ No preferred model found in available models")
+                        # Fallback to first available model
+                        self.model_name = available_models[0]
+                        self.model = genai.GenerativeModel(self.model_name)
+                        self._initialized = True
+                        print(f"✓ Gemini API initialized with model: {self.model_name}")
                 else:
-                    print("✗ Could not fetch models — no compatible model available.")
-
+                    print("✗ No models available")
+                    
             except Exception as e:
                 print(f"✗ Gemini initialization failed: {e}")
                 self._initialized = False
         else:
             if not GEMINI_AVAILABLE:
-                print("✗ Google GenAI library not installed")
+                print("✗ google-generativeai library not installed")
             if not self.api_key:
                 print("✗ No API key found")
     
@@ -92,8 +94,7 @@ class GeminiRAG:
             if hasattr(st, 'secrets') and 'GOOGLE_API_KEY' in st.secrets:
                 print("✓ API key loaded from Streamlit secrets")
                 return st.secrets['GOOGLE_API_KEY']
-        except (ImportError, FileNotFoundError, KeyError, AttributeError) as e:
-            # Streamlit not available or secrets not configured
+        except (ImportError, FileNotFoundError, KeyError, AttributeError):
             pass
         
         # Priority 2: Environment variable
@@ -117,38 +118,28 @@ class GeminiRAG:
         return ''
     
     def _list_available_models(self) -> List[str]:
-        """Query the Gemini API to get list of available models."""
+        """Get list of available models using OLD SDK."""
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
-            response = requests.get(url, timeout=10)
+            models = genai.list_models()
+            model_names = []
             
-            if response.status_code == 200:
-                data = response.json()
-                models = []
-
-                for model in data.get("models", []):
-                    full_name = model.get("name", "")
-                    if "/" in full_name:
-                        clean = full_name.split("/")[-1]
-                    else:
-                        clean = full_name
-
-                    if "generateContent" in model.get("supportedGenerationMethods", []):
-                        models.append(clean)
-
-                return sorted(models, reverse=True)
-
-            else:
-                print(f"✗ Model list API returned {response.status_code}")
-                return []
+            for model in models:
+                # Extract model name (e.g., "models/gemini-pro" -> "gemini-pro")
+                name = model.name.split('/')[-1] if '/' in model.name else model.name
                 
+                # Check if model supports generateContent
+                if 'generateContent' in [method for method in model.supported_generation_methods]:
+                    model_names.append(name)
+            
+            return model_names
         except Exception as e:
-            print(f"✗ Failed to fetch model list: {e}")
-            return []
+            print(f"✗ Failed to list models: {e}")
+            # Return default models as fallback
+            return ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"]
     
     def is_available(self) -> bool:
-        """Check if Gemini/Gemma model is available."""
-        return self._initialized and self.model_name is not None
+        """Check if Gemini model is available."""
+        return self._initialized and self.model is not None
     
     def extract_skills(self, project_title: str, context_keywords: List[str] = None) -> List[str]:
         """Extract technical skills from a project title."""
@@ -165,7 +156,7 @@ class GeminiRAG:
             return self._extract_skills_fallback(project_title, context_keywords)
     
     def _extract_skills_gemini(self, project_title: str, context_keywords: List[str] = None) -> List[str]:
-        """Use Google GenAI (Gemma) to extract skills."""
+        """Use Gemini to extract skills."""
         context_str = ""
         if context_keywords:
             context_str = f"\n\nRelated keywords from existing research: {', '.join(context_keywords[:30])}"
@@ -185,21 +176,15 @@ Example output: convolutional neural networks, image segmentation, U-Net archite
 Skills:"""
 
         try:
-            # Build SDK config object using types.GenerateContentConfig
-            cfg = None
-            if types is not None:
-                cfg = types.GenerateContentConfig(
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
                     temperature=0.1,
                     max_output_tokens=200
                 )
-
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=cfg
             )
-
-            if response and getattr(response, "text", None):
+            
+            if response and response.text:
                 skills_text = response.text.strip()
                 # Remove any leading/trailing quotes or colons
                 skills_text = re.sub(r'^[:\s"\']+|[:\s"\']+$', '', skills_text)
@@ -324,7 +309,7 @@ Skills:"""
             }
     
     def _generate_analysis(self, context: List[Dict[str, Any]], skills: List[str]) -> Dict[str, Any]:
-        """Generate detailed analysis using Gemini/Gemma."""
+        """Generate detailed analysis using Gemini."""
         
         # Build context string from publications
         context_parts = []
@@ -387,20 +372,15 @@ IMPORTANT:
 - Do not make up information not in the context"""
 
         try:
-            cfg = None
-            if types is not None:
-                cfg = types.GenerateContentConfig(
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
                     temperature=0.2,
                     max_output_tokens=2000
                 )
-
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=cfg
             )
             
-            if response and getattr(response, "text", None):
+            if response and response.text:
                 return {
                     'analysis': response.text,
                     'error': None
@@ -445,20 +425,15 @@ Recent Paper Titles:
 
 Summary (2-3 sentences only):"""
             
-            cfg = None
-            if types is not None:
-                cfg = types.GenerateContentConfig(
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
                     temperature=0.2,
                     max_output_tokens=150
                 )
-            
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=cfg
             )
             
-            if response and getattr(response, "text", None):
+            if response and response.text:
                 return response.text.strip()
         except Exception as e:
             print(f"Author summary failed: {e}")
